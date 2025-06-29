@@ -1,37 +1,24 @@
-name: Build
+name: build
 
 on:
+  workflow_dispatch:
   schedule:
     - cron: '0 3 2 * *'
-  workflow_dispatch:
 
 jobs:
-  build_caddy:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - name: Checkout main branch
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          path: main
-          ref: main
 
-      - name: Checkout bin branch
-        uses: actions/checkout@v4
-        with:
-          path: bin
-          ref: bin
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Get latest Caddy stable version
+      - name: Check update
         run: |
           LATEST_VERSION=$(curl -s "https://api.github.com/repos/caddyserver/caddy/releases/latest" | jq -r .tag_name)
-          CURRENT_VERSION=""
-          if [ -f bin/caddy_version ]; then
-            CURRENT_VERSION=$(cat bin/caddy_version)
-          fi
+          CURRENT_VERSION=$(curl -s "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/latest" | jq -r .tag_name)
 
           if [ "$LATEST_VERSION" = "$CURRENT_VERSION" ]; then
             echo "Caddy is already up to date ($LATEST_VERSION)."
@@ -47,37 +34,31 @@ jobs:
         with:
           go-version: 'stable'
 
-      - name: Install xcaddy
+      - name: Build Caddy
         if: ${{ env.SHOULD_BUILD == 'true' }}
         run: |
           go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 
-      - name: Build Caddy
-        if: ${{ env.SHOULD_BUILD == 'true' }}
-        run: |
           MODULE_LIST=""
-          if [ -f main/module_list ]; then
-            MODULE_LIST=$(cat main/module_list | sed 's/^/--with /' | tr '\n' ' ' | sed 's/ $//')
+          if [ -f module_list ]; then
+            MODULE_LIST=$(cat module_list | sed 's/^/--with /' | tr '\n' ' ' | sed 's/ $//')
           fi
 
           xcaddy build "$CADDY_VERSION" $MODULE_LIST
-          
-          if [ -f caddy ]; then
-            cd bin
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
 
-            rm -rf ./*
-            git add .
-
-            cp ../caddy .
-            echo "$CADDY_VERSION" > caddy_version
-            git add .
-
-            git commit -m "build $CADDY_VERSION"
-            git push origin bin
-            
-          else
+          if [ ! -f caddy ]; then
             echo "Error: Caddy binary not found after build."
             exit 1
           fi
+
+          CADDY_FILE="caddy_${CADDY_VERSION#v}_linux_amd64.tar.gz"
+          tar -czvf "$CADDY_FILE" caddy
+          echo "CADDY_FILE=$CADDY_FILE" >> "$GITHUB_ENV"
+
+      - name: Release
+        if: ${{ env.SHOULD_BUILD == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.CADDY_VERSION }}
+          files: ${{ env.CADDY_FILE }}
+          
